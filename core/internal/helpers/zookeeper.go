@@ -13,9 +13,9 @@ package helpers
 import (
 	"time"
 
-	"github.com/linkedin/Burrow/core/protocol"
 	"github.com/samuel/go-zookeeper/zk"
 	"github.com/stretchr/testify/mock"
+	"github.com/tysonheart/burrow/core/protocol"
 	"go.uber.org/zap"
 )
 

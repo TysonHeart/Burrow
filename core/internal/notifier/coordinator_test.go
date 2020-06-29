@@ -18,15 +18,16 @@ import (
 	"text/template"
 	"time"
 
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"testing"
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/internal/helpers"
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/internal/helpers"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 func fixtureCoordinator() *Coordinator {

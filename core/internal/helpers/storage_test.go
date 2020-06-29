@@ -11,11 +11,12 @@
 package helpers
 
 import (
-	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
 
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 func TestTimeoutSendStorageRequest(t *testing.T) {

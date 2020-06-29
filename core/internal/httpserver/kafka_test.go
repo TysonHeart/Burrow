@@ -17,11 +17,12 @@ import (
 
 	"github.com/spf13/viper"
 
-	"github.com/stretchr/testify/assert"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 func TestHttpServer_handleClusterList(t *testing.T) {

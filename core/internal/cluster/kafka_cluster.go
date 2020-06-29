@@ -11,6 +11,7 @@
 package cluster
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -18,8 +19,8 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/internal/helpers"
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/internal/helpers"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 // KafkaCluster is a cluster module which connects to a single Apache Kafka cluster and manages the broker topic and
@@ -47,6 +48,13 @@ type KafkaCluster struct {
 
 	fetchMetadata bool
 	topicMap      map[string]int
+
+	requestChannel chan *protocol.ClusterRequest
+}
+
+// GetCommunicationChannel return the communication channel for this cluster
+func (module *KafkaCluster) GetCommunicationChannel() chan *protocol.ClusterRequest {
+	return module.requestChannel
 }
 
 // Configure validates the configuration for the cluster. At minimum, there must be a list of servers provided for the
@@ -98,6 +106,9 @@ func (module *KafkaCluster) Start() error {
 	// Start main loop that has a timer for offset and topic fetches
 	module.offsetTicker = time.NewTicker(time.Duration(module.offsetRefresh) * time.Second)
 	module.metadataTicker = time.NewTicker(time.Duration(module.topicRefresh) * time.Second)
+
+	module.requestChannel = make(chan *protocol.ClusterRequest, 50)
+
 	go module.mainLoop(helperClient)
 
 	return nil
@@ -126,10 +137,54 @@ func (module *KafkaCluster) mainLoop(client helpers.SaramaClient) {
 		case <-module.metadataTicker.C:
 			// Update metadata on next offset fetch
 			module.fetchMetadata = true
+		case req := <-module.requestChannel:
+			go module.processClusterRequest(client, req)
 		case <-module.quitChannel:
 			return
 		}
 	}
+}
+
+func (module *KafkaCluster) processClusterRequest(client helpers.SaramaClient, req *protocol.ClusterRequest) error {
+	module.Log.Info("Received cluster request for", zap.Stringer("TPO", req))
+
+	t, err := module.getMessageTimestamp(client, req.Topic, req.Partition, req.Offset)
+	if err != nil {
+		module.Log.Error("Error", zap.Error(err))
+		req.Error = err
+	} else {
+		req.Timestamp = t
+		req.Error = nil
+	}
+
+	req.ResponseChannel <- req
+
+	return nil
+}
+
+func (module *KafkaCluster) getMessageTimestamp(client helpers.SaramaClient, topic string, partition int32, offset int64) (time.Time, error) {
+	consumer, err := client.NewConsumerFromClient()
+	if err != nil {
+		module.Log.Error("Error creating new consumer from client")
+		return time.Time{}, fmt.Errorf("error getting new consumer from client")
+	}
+
+	pConsumer, err := consumer.ConsumePartition(topic, partition, offset-1)
+	defer consumer.Close()
+
+	if err != nil {
+		module.Log.Error("Error starting time offset consumer",
+			zap.String("topic", topic), zap.Int32("partition", partition), zap.Int64("offset", offset))
+		return time.Time{}, fmt.Errorf("Error starting time offset consumer for: %s:%d:%d", topic, partition, offset)
+	}
+	for message := range pConsumer.Messages() {
+		module.Log.Info("Received message for finding timestamp for",
+			zap.String("topic", topic), zap.Int32("partition", partition), zap.Int64("offset", offset))
+
+		return message.Timestamp, nil
+	}
+
+	return time.Time{}, fmt.Errorf("No messages found for get timestamp for at TPO: %s:%d:%d", topic, partition, offset)
 }
 
 func (module *KafkaCluster) maybeUpdateMetadataAndDeleteTopics(client helpers.SaramaClient) {

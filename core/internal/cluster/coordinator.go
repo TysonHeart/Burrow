@@ -22,12 +22,13 @@ package cluster
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/internal/helpers"
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/internal/helpers"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 // A "cluster" is a single Kafka cluster that is going to be monitored by Burrow. The cluster module is responsible for
@@ -46,6 +47,14 @@ type Coordinator struct {
 	Log *zap.Logger
 
 	modules map[string]protocol.Module
+
+	quitChannel chan struct{}
+	running     sync.WaitGroup
+}
+
+type ClusterModule interface {
+	protocol.Module
+	GetCommunicationChannel() chan *protocol.ClusterRequest
 }
 
 // getModuleForClass returns the correct module based on the passed className. As part of the Configure steps, if there
@@ -73,6 +82,9 @@ func getModuleForClass(app *protocol.ApplicationContext, moduleName string, clas
 func (bc *Coordinator) Configure() {
 	bc.Log.Info("configuring")
 
+	bc.quitChannel = make(chan struct{})
+	bc.running = sync.WaitGroup{}
+
 	bc.modules = make(map[string]protocol.Module)
 
 	// Create all configured cluster modules, add to list of clusters
@@ -96,7 +108,37 @@ func (bc *Coordinator) Start() error {
 	if err != nil {
 		return errors.New("Error starting cluster module: " + err.Error())
 	}
+
+	go bc.mainLoop()
+
 	return nil
+}
+
+func (bc *Coordinator) mainLoop() {
+	bc.running.Add(1)
+	defer bc.running.Done()
+
+	// We only support 1 module right now, so only send to that module
+	// var channel chan *protocol.StorageRequest
+	// for _, module := range bc.modules {
+	// 	channel = module.(Module).GetCommunicationChannel()
+	// }
+
+	for {
+		select {
+		case req := <-bc.App.ClusterChannel:
+			bc.Log.Info("Received request on ClusterChannel",
+				zap.String("TIME-LAG", "TIME-lAG"),
+				zap.String("cluster", req.Cluster))
+			mod := bc.modules[req.Cluster]
+			if mod != nil {
+				channel := mod.(ClusterModule).GetCommunicationChannel()
+				channel <- req
+			}
+		case <-bc.quitChannel:
+			return
+		}
+	}
 }
 
 // Stop calls each of the configured cluster modules' underlying Stop funcs. It is expected that the module Stop will
@@ -107,5 +149,9 @@ func (bc *Coordinator) Stop() error {
 
 	// The individual cluster modules can choose whether or not to implement a wait in the Stop routine
 	helpers.StopCoordinatorModules(bc.modules)
+
+	close(bc.quitChannel)
+	bc.running.Wait()
+
 	return nil
 }

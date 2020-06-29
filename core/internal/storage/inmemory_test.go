@@ -15,13 +15,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 func fixtureModule(whitelist string, blacklist string) *InMemoryStorage {

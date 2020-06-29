@@ -28,8 +28,8 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/internal/helpers"
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/internal/helpers"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 // The consumer module is responsible for fetching information about consumer group status from some external system

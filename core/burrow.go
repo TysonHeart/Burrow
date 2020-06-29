@@ -13,9 +13,9 @@
 // logging and application management (such as PID files), as well as the Start method that runs Burrow itself.
 //
 // The documentation for the rest of the internals, including all the available modules, is available at
-// https://godoc.org/github.com/linkedin/Burrow/core/internal/?m=all. For the most part, end users of Burrow should not
+// https://godoc.org/github.com/tysonheart/burrow/core/internal/?m=all. For the most part, end users of Burrow should not
 // need to refer to this documentation, as it is targeted at developers of Burrow modules. Details on what modules are
-// available and how to configure them are available at https://github.com/linkedin/Burrow/wiki
+// available and how to configure them are available at https://github.com/tysonheart/burrow/wiki
 package core
 
 import (
@@ -23,14 +23,14 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/internal/cluster"
-	"github.com/linkedin/Burrow/core/internal/consumer"
-	"github.com/linkedin/Burrow/core/internal/evaluator"
-	"github.com/linkedin/Burrow/core/internal/httpserver"
-	"github.com/linkedin/Burrow/core/internal/notifier"
-	"github.com/linkedin/Burrow/core/internal/storage"
-	"github.com/linkedin/Burrow/core/internal/zookeeper"
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/internal/cluster"
+	"github.com/tysonheart/burrow/core/internal/consumer"
+	"github.com/tysonheart/burrow/core/internal/evaluator"
+	"github.com/tysonheart/burrow/core/internal/httpserver"
+	"github.com/tysonheart/burrow/core/internal/notifier"
+	"github.com/tysonheart/burrow/core/internal/storage"
+	"github.com/tysonheart/burrow/core/internal/zookeeper"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 func newCoordinators(app *protocol.ApplicationContext) [7]protocol.Coordinator {
@@ -143,6 +143,7 @@ func Start(app *protocol.ApplicationContext, exitChannel chan os.Signal) int {
 	//   * The HTTP server sends requests to both the evaluator and storage coordinators to fulfill API requests
 	app.EvaluatorChannel = make(chan *protocol.EvaluatorRequest)
 	app.StorageChannel = make(chan *protocol.StorageRequest)
+	app.ClusterChannel = make(chan *protocol.ClusterRequest)
 
 	// Configure coordinators and exit if anything fails
 	configureCoordinators(app, coordinators)

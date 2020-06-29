@@ -23,7 +23,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 // HTTPNotifier is a module which can be used to send notifications of consumer group status via outbound HTTP calls to

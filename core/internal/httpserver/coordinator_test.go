@@ -16,14 +16,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 func fixtureConfiguredCoordinator() *Coordinator {

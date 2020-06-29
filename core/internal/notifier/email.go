@@ -22,9 +22,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/internal/helpers"
-	"github.com/linkedin/Burrow/core/protocol"
 	"github.com/spf13/viper"
+	"github.com/tysonheart/burrow/core/internal/helpers"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 // EmailNotifier is a module which can be used to send notifications of consumer group status via email messages. One

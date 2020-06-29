@@ -19,7 +19,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
-	"github.com/linkedin/Burrow/core/protocol"
+	"github.com/tysonheart/burrow/core/protocol"
 )
 
 // CachingEvaluator is an evaluator module that responds to evaluation requests and checks consumer status using the

@@ -1,10 +1,8 @@
 [general]
 pidfile="burrow.pid"
-stdout-logfile="burrow.out"
-access-control-allow-origin="mysite.example.com"
 
 [logging]
-filename="logs/burrow.log"
+filename=""
 level="info"
 maxsize=100
 maxbackups=30
@@ -13,37 +11,28 @@ use-localtime=false
 use-compression=true
 
 [zookeeper]
-servers=[ "zkhost01.example.com:2181", "zkhost02.example.com:2181", "zkhost03.example.com:2181" ]
+servers=["qzkpr01.p16.eng.sjc01.qualys.com:50024"]
 timeout=6
-root-path="/burrow"
+root-path="/mypath/burrow1"
 
 [client-profile.test]
 client-id="burrow-test"
-kafka-version="0.10.0"
+kafka-version="0.11.0.1"
 
 [cluster.local]
 class-name="kafka"
-servers=[ "kafka01.example.com:10251", "kafka02.example.com:10251", "kafka03.example.com:10251" ]
+servers=["qkafka04.p16.eng.sjc01.qualys.com:50360", "qkafka05.p16.eng.sjc01.qualys.com:50360", "qkafka06.p16.eng.sjc01.qualys.com:50360"]
 client-profile="test"
 topic-refresh=120
 offset-refresh=30
 
 [consumer.local]
 class-name="kafka"
+servers=["qkafka04.p16.eng.sjc01.qualys.com:50360", "qkafka05.p16.eng.sjc01.qualys.com:50360", "qkafka06.p16.eng.sjc01.qualys.com:50360"]
 cluster="local"
-servers=[ "kafka01.example.com:10251", "kafka02.example.com:10251", "kafka03.example.com:10251" ]
 client-profile="test"
 group-blacklist="^(console-consumer-|python-kafka-consumer-|quick-).*$"
-group-whitelist=""
-
-[consumer.local_zk]
-class-name="kafka_zk"
-cluster="local"
-servers=[ "zk01.example.com:2181", "zk02.example.com:2181", "zk03.example.com:2181" ]
-zookeeper-path="/kafka-cluster"
-zookeeper-timeout=30
-group-blacklist="^(console-consumer-|python-kafka-consumer-|quick-).*$"
-group-whitelist=""
+group-whitelist="burrow-test-consumer"
 
 [httpserver.default]
 address=":8000"
@@ -54,16 +43,3 @@ workers=20
 intervals=15
 expire-group=604800
 min-distance=1
-
-[notifier.default]
-class-name="http"
-url-open="http://someservice.example.com:1467/v1/event"
-interval=60
-timeout=5
-keepalive=30
-extras={ api_key="REDACTED", app="burrow", tier="STG", fabric="mydc" }
-template-open="conf/default-http-post.tmpl"
-template-close="conf/default-http-delete.tmpl"
-method-close="DELETE"
-send-close=true
-threshold=1

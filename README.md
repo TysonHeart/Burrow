@@ -1,8 +1,8 @@
 [![Join the chat at https://gitter.im/linkedin-Burrow/Lobby](https://badges.gitter.im/linkedin-Burrow/Lobby.svg)](https://gitter.im/linkedin-Burrow/Lobby?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 [![Build Status](https://travis-ci.org/linkedin/kafka-tools.svg)](https://travis-ci.org/linkedin/kafka-tools)
-[![go report card](https://goreportcard.com/badge/github.com/linkedin/Burrow)](https://goreportcard.com/report/github.com/linkedin/Burrow)
-[![Coverage Status](https://coveralls.io/repos/github/linkedin/Burrow/badge.svg?branch=master)](https://coveralls.io/github/linkedin/Burrow?branch=master)
-[![GoDoc](https://godoc.org/github.com/linkedin/Burrow?status.svg)](https://godoc.org/github.com/linkedin/Burrow)
+[![go report card](https://goreportcard.com/badge/github.com/tysonheart/burrow)](https://goreportcard.com/report/github.com/tysonheart/burrow)
+[![Coverage Status](https://coveralls.io/repos/github/tysonheart/burrow/badge.svg?branch=master)](https://coveralls.io/github/tysonheart/burrow?branch=master)
+[![GoDoc](https://godoc.org/github.com/tysonheart/burrow?status.svg)](https://godoc.org/github.com/tysonheart/burrow)
 
 # Burrow - Kafka Consumer Lag Checking
 
@@ -27,8 +27,8 @@ If you have not yet installed the [Go Dependency Management Tool](https://github
 
 ### Build and Install
 ```
-$ go get github.com/linkedin/Burrow
-$ cd $GOPATH/src/github.com/linkedin/Burrow
+$ go get github.com/tysonheart/burrow
+$ cd $GOPATH/src/github.com/tysonheart/burrow
 $ dep ensure
 $ go install
 ```
@@ -60,7 +60,7 @@ Install [Docker Compose](https://docs.docker.com/compose/) and then:
 
 
 ### Configuration
-For information on how to write your configuration file, check out the [detailed wiki](https://github.com/linkedin/Burrow/wiki)
+For information on how to write your configuration file, check out the [detailed wiki](https://github.com/tysonheart/burrow/wiki)
 
 ## License
 Copyright 2017 LinkedIn Corp. Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.
