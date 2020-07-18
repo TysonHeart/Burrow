@@ -143,7 +143,7 @@ func Start(app *protocol.ApplicationContext, exitChannel chan os.Signal) int {
 	//   * The HTTP server sends requests to both the evaluator and storage coordinators to fulfill API requests
 	app.EvaluatorChannel = make(chan *protocol.EvaluatorRequest)
 	app.StorageChannel = make(chan *protocol.StorageRequest)
-	app.ClusterChannel = make(chan *protocol.ClusterRequest)
+	app.ClusterChannel = make(chan *protocol.OffsetFetchRequest)
 
 	// Configure coordinators and exit if anything fails
 	configureCoordinators(app, coordinators)

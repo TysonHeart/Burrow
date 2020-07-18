@@ -11,6 +11,7 @@
 package evaluator
 
 import (
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -133,6 +134,8 @@ func (module *CachingEvaluator) getConsumerStatus(request *protocol.EvaluatorReq
 			Partitions: make([]*protocol.PartitionStatus, 0),
 			Maxlag:     nil,
 			TotalLag:   0,
+			MinTimeLag: -1,
+			MaxTimeLag: -1,
 		}
 	} else {
 		status := result.(*protocol.ConsumerGroupStatus)
@@ -150,6 +153,8 @@ func (module *CachingEvaluator) getConsumerStatus(request *protocol.EvaluatorReq
 				TotalLag:        cachedStatus.TotalLag,
 				TotalPartitions: cachedStatus.TotalPartitions,
 				Partitions:      make([]*protocol.PartitionStatus, cachedStatus.TotalPartitions),
+				MinTimeLag:      cachedStatus.MinTimeLag,
+				MaxTimeLag:      cachedStatus.MaxTimeLag,
 			}
 
 			// Copy over any partitions that do not have the status StatusOK
@@ -207,6 +212,8 @@ func (module *CachingEvaluator) evaluateConsumerStatus(clusterAndConsumer string
 		Maxlag:          nil,
 		TotalLag:        0,
 		TotalPartitions: 0,
+		MaxTimeLag:      math.MinInt64, // set to min int64 for below comparisons for max value.
+		MinTimeLag:      math.MaxInt64, // set to max int64 for below comparisons for min value.
 	}
 
 	// Count up the number of partitions for this consumer first, so we can size our slice correctly
@@ -214,9 +221,31 @@ func (module *CachingEvaluator) evaluateConsumerStatus(clusterAndConsumer string
 	for _, partitions := range topics {
 		for _, partition := range partitions {
 			status.TotalPartitions++
+
 			status.TotalLag += partition.CurrentLag
+
+			if partition.CurrentTimeLag != -1 {
+				if status.MaxTimeLag < partition.CurrentTimeLag.Milliseconds() {
+					status.MaxTimeLag = partition.CurrentTimeLag.Milliseconds()
+				}
+
+				if status.MinTimeLag != -1 && status.MinTimeLag > partition.CurrentTimeLag.Milliseconds() {
+					status.MinTimeLag = partition.CurrentTimeLag.Milliseconds()
+				}
+			}
 		}
 	}
+
+	// set to error condition value (=-1) if there were no updates when ALL of partition.CurrentTimeLag is -1 for all partitions.
+	// If even one partition has available CurrentTimeLag, it will be reported.
+	if status.MaxTimeLag == math.MinInt64 {
+		status.MaxTimeLag = -1
+	}
+
+	if status.MinTimeLag == math.MaxInt64 {
+		status.MinTimeLag = -1
+	}
+
 	status.Partitions = make([]*protocol.PartitionStatus, status.TotalPartitions)
 
 	count := 0
@@ -257,6 +286,8 @@ func (module *CachingEvaluator) evaluateConsumerStatus(clusterAndConsumer string
 		zap.String("status", status.Status.String()),
 		zap.Float32("complete", status.Complete),
 		zap.Uint64("total_lag", status.TotalLag),
+		zap.Int64("max_time_lag", status.MaxTimeLag),
+		zap.Int64("min_time_lag", status.MinTimeLag),
 		zap.Int("total_partitions", status.TotalPartitions),
 	)
 	return status, nil
@@ -264,8 +295,9 @@ func (module *CachingEvaluator) evaluateConsumerStatus(clusterAndConsumer string
 
 func evaluatePartitionStatus(partition *protocol.ConsumerPartition, minimumComplete float32) *protocol.PartitionStatus {
 	status := &protocol.PartitionStatus{
-		Status:     protocol.StatusOK,
-		CurrentLag: partition.CurrentLag,
+		Status:         protocol.StatusOK,
+		CurrentLag:     partition.CurrentLag,
+		CurrentTimeLag: partition.CurrentTimeLag.Milliseconds(),
 	}
 
 	// If there are no offsets, we can't do anything

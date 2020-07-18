@@ -14,7 +14,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
@@ -52,7 +51,7 @@ type KafkaClient struct {
 	running     sync.WaitGroup
 
 	// min time interval for time lookup in seconds
-	minTimeLookupInterval int64
+	// minTimeLookupInterval int64
 }
 
 type offsetKey struct {
@@ -81,20 +80,12 @@ type metadataMember struct {
 	Assignment       map[string][]int32
 }
 
-// CommitMetadata Metadata associated with a commit like timestamp etc.
-type CommitMetadata struct {
-	// Create time of the message at the offset
-	msgTimestamp time.Time
-	// last time when this entry was recorded (msgTimestamp updated)
-	lastUpdated time.Time
-}
-
 // OffsetsPartitionConsumerCtx state maintained by each partition consumer for offsets topic (1 per partition)
 type OffsetsPartitionConsumerCtx struct {
 	module                 *KafkaClient
-	clusterResponseChannel chan *protocol.ClusterRequest
+	clusterResponseChannel chan *protocol.OffsetFetchResponse
 	pConsumer              *sarama.PartitionConsumer
-	commitMetaDataMap      map[string]*CommitMetadata
+	commitMetaDataMap      map[string]*protocol.CommitMetadata
 }
 
 // Configure validates the configuration for the consumer. At minimum, there must be a cluster name to which these
@@ -128,8 +119,8 @@ func (module *KafkaClient) Configure(name string, configRoot string) {
 	module.offsetsTopic = viper.GetString(configRoot + ".offsets-topic")
 	module.startLatest = viper.GetBool(configRoot + ".start-latest")
 
-	viper.SetDefault(configRoot+".min-time-lookup", 1800)
-	module.minTimeLookupInterval = viper.GetInt64(configRoot + ".min-time-lookup")
+	// viper.SetDefault(configRoot+".min-time-lookup", 900)
+	// module.minTimeLookupInterval = viper.GetInt64(configRoot + ".min-time-lookup")
 
 	whitelist := viper.GetString(configRoot + ".group-whitelist")
 	if whitelist != "" {
@@ -255,8 +246,8 @@ func (module *KafkaClient) startKafkaConsumer(client helpers.SaramaClient) error
 		consumerCtx := &OffsetsPartitionConsumerCtx{
 			module:                 module,
 			pConsumer:              &pconsumer,
-			clusterResponseChannel: make(chan *protocol.ClusterRequest),
-			commitMetaDataMap:      make(map[string]*CommitMetadata, 512),
+			clusterResponseChannel: make(chan *protocol.OffsetFetchResponse),
+			commitMetaDataMap:      make(map[string]*protocol.CommitMetadata, 512),
 		}
 
 		module.running.Add(1)
@@ -291,7 +282,7 @@ func (module *KafkaClient) processConsumerOffsetsMessage(msg *sarama.ConsumerMes
 
 	switch keyver {
 	case 0, 1:
-		module.decodeKeyAndOffset(msg, consumerCtx, keyBuffer, msg.Value, logger)
+		module.decodeKeyAndOffset(keyBuffer, msg.Value, logger, consumerCtx)
 	case 2:
 		module.decodeGroupMetadata(keyBuffer, msg.Value, logger)
 	default:
@@ -330,7 +321,7 @@ func (module *KafkaClient) acceptConsumerGroup(group string) bool {
 	return true
 }
 
-func (module *KafkaClient) decodeKeyAndOffset(msg *sarama.ConsumerMessage, consumerCtx *OffsetsPartitionConsumerCtx, keyBuffer *bytes.Buffer, value []byte, logger *zap.Logger) {
+func (module *KafkaClient) decodeKeyAndOffset(keyBuffer *bytes.Buffer, value []byte, logger *zap.Logger, consumerCtx *OffsetsPartitionConsumerCtx) {
 	// Version 0 and 1 keys are decoded the same way
 	offsetKey, errorAt := decodeOffsetKeyV0(keyBuffer)
 	if errorAt != "" {
@@ -368,9 +359,9 @@ func (module *KafkaClient) decodeKeyAndOffset(msg *sarama.ConsumerMessage, consu
 
 	switch valueVersion {
 	case 0, 1:
-		module.decodeAndSendOffset(msg, consumerCtx, offsetKey, valueBuffer, offsetLogger, decodeOffsetValueV0)
+		module.decodeAndSendOffset(consumerCtx, offsetKey, valueBuffer, offsetLogger, decodeOffsetValueV0)
 	case 3:
-		module.decodeAndSendOffset(msg, consumerCtx, offsetKey, valueBuffer, offsetLogger, decodeOffsetValueV3)
+		module.decodeAndSendOffset(consumerCtx, offsetKey, valueBuffer, offsetLogger, decodeOffsetValueV3)
 	default:
 		offsetLogger.Warn("failed to decode",
 			zap.String("reason", "value version"),
@@ -379,7 +370,7 @@ func (module *KafkaClient) decodeKeyAndOffset(msg *sarama.ConsumerMessage, consu
 	}
 }
 
-func (module *KafkaClient) decodeAndSendOffset(msg *sarama.ConsumerMessage, consumerCtx *OffsetsPartitionConsumerCtx, offsetKey offsetKey, valueBuffer *bytes.Buffer, logger *zap.Logger, decoder func(*bytes.Buffer) (offsetValue, string)) {
+func (module *KafkaClient) decodeAndSendOffset(consumerCtx *OffsetsPartitionConsumerCtx, offsetKey offsetKey, valueBuffer *bytes.Buffer, logger *zap.Logger, decoder func(*bytes.Buffer) (offsetValue, string)) {
 	offsetValue, errorAt := decoder(valueBuffer)
 	if errorAt != "" {
 		logger.Warn("failed to decode",
@@ -390,20 +381,21 @@ func (module *KafkaClient) decodeAndSendOffset(msg *sarama.ConsumerMessage, cons
 		return
 	}
 
-	_, err := module.getOffsetTimestamp(msg, consumerCtx, offsetKey, offsetValue)
+	// The committed offset is next record to consume. So we use but one message (offsetValue.Offset-1).
+	msgTimestamp, err := module.getOffsetTimestampFromCluster(offsetKey.Group, offsetKey.Topic, offsetKey.Partition, offsetValue.Offset-1, consumerCtx)
 	if err != nil {
-		logger.Warn("failed to get offset timestamp")
-		return
+		logger.Debug("failed to get offset timestamp")
 	}
 
 	partitionOffset := &protocol.StorageRequest{
-		RequestType: protocol.StorageSetConsumerOffset,
-		Cluster:     module.cluster,
-		Topic:       offsetKey.Topic,
-		Partition:   int32(offsetKey.Partition),
-		Group:       offsetKey.Group,
-		Timestamp:   int64(offsetValue.Timestamp),
-		Offset:      int64(offsetValue.Offset),
+		RequestType:  protocol.StorageSetConsumerOffset,
+		Cluster:      module.cluster,
+		Topic:        offsetKey.Topic,
+		Partition:    int32(offsetKey.Partition),
+		Group:        offsetKey.Group,
+		Timestamp:    int64(offsetValue.Timestamp),
+		Offset:       int64(offsetValue.Offset),
+		MsgTimestamp: msgTimestamp,
 	}
 
 	logger.Debug("consumer offset",
@@ -413,64 +405,69 @@ func (module *KafkaClient) decodeAndSendOffset(msg *sarama.ConsumerMessage, cons
 	helpers.TimeoutSendStorageRequest(module.App.StorageChannel, partitionOffset, 1)
 }
 
-func (module *KafkaClient) getOffsetTimestamp(msg *sarama.ConsumerMessage, consumerCtx *OffsetsPartitionConsumerCtx, key offsetKey, value offsetValue) (time.Time, error) {
+// First checks if we are within the min-time-lookup interval (secs) compared to last fetch for this group+topic+partition.
+// If within the interval, return from local map (in-memory); else do a "real" fetch from the
+// corresponding cluster module.
+// func (module *KafkaClient) getOffsetTimestamp(group string, topic string, partition int32, offset int64, consumerCtx *OffsetsPartitionConsumerCtx) (time.Time, error) {
 
-	key1 := fmt.Sprintf("%s:%s:%d", key.Group, key.Topic, key.Partition)
+// 	key1 := fmt.Sprintf("%s:%s:%d", group, topic, partition)
 
-	if val, ok := consumerCtx.commitMetaDataMap[key1]; !ok {
-		module.Log.Info("No entry for key for offset time lookup; first lookup",
-			zap.String("key", key1))
+// 	if val, ok := consumerCtx.commitMetaDataMap[key1]; !ok {
+// 		module.Log.Info("No entry for key for offset time lookup; first lookup",
+// 			zap.String("key", key1))
 
-		t, err := module.fetchOffsetTimestamp(key.Topic, key.Partition, value.Offset, consumerCtx)
-		if err != nil {
-			return time.Time{}, err
-		}
+// 		t, err := module.fetchOffsetTimestamp(topic, partition, offset, consumerCtx)
+// 		if err != nil {
+// 			return time.Time{}, err
+// 		}
 
-		cmd := &CommitMetadata{
-			msgTimestamp: t,
-			lastUpdated:  time.Now(),
-		}
+// 		cmd := &protocol.CommitMetadata{
+// 			MsgTimestamp: t,
+// 			LastUpdated:  time.Now(),
+// 		}
 
-		consumerCtx.commitMetaDataMap[key1] = cmd
+// 		consumerCtx.commitMetaDataMap[key1] = cmd
 
-		return cmd.msgTimestamp, nil
+// 		return cmd.MsgTimestamp, nil
 
-	} else {
-		if time.Now().Sub(val.lastUpdated).Seconds() > float64(module.minTimeLookupInterval) {
-			module.Log.Info("Offset time lookup min interval exceeded, looking up time for key",
-				zap.String("key", key1))
+// 	} else {
+// 		if time.Now().Sub(val.LastUpdated).Seconds() > float64(module.minTimeLookupInterval) {
+// 			module.Log.Info("Offset time lookup min interval exceeded, looking up time for key",
+// 				zap.String("key", key1))
 
-			t, err := module.fetchOffsetTimestamp(key.Topic, key.Partition, value.Offset, consumerCtx)
-			if err != nil {
-				return time.Time{}, err
-			}
+// 			t, err := module.fetchOffsetTimestamp(topic, partition, offset, consumerCtx)
+// 			if err != nil {
+// 				return time.Time{}, err
+// 			}
 
-			val.lastUpdated = time.Now()
-			val.msgTimestamp = t
-			consumerCtx.commitMetaDataMap[key1] = val
-		}
+// 			val.LastUpdated = time.Now()
+// 			val.MsgTimestamp = t
+// 			consumerCtx.commitMetaDataMap[key1] = val
+// 		}
 
-		return val.msgTimestamp, nil
-	}
-}
+// 		return val.MsgTimestamp, nil
+// 	}
+// }
 
-func (module *KafkaClient) fetchOffsetTimestamp(topic string, partition int32, offset int64, consumerCtx *OffsetsPartitionConsumerCtx) (time.Time, error) {
+// Performs a real fetch of timestamp from cluster module by issuing a request
+func (module *KafkaClient) getOffsetTimestampFromCluster(category string, topic string, partition int32, offset int64, consumerCtx *OffsetsPartitionConsumerCtx) (time.Time, error) {
 	// request the cluster module to give details of the message at that tpo
-	clusterRequest := &protocol.ClusterRequest{
+	clusterRequest := &protocol.OffsetFetchRequest{
+		Category:        category,
 		Cluster:         module.cluster,
 		Topic:           topic,
 		Partition:       partition,
-		Offset:          offset - 1, // The committed offset is next record to consume. So we use but one message.
+		Offset:          offset,
 		ResponseChannel: consumerCtx.clusterResponseChannel,
 	}
 
 	// synchronous API call to fetch response
-	module.Log.Info("Sending offset time request to cluster", zap.String("TIME-LAG", "TIME-lAG"), zap.Stringer("TPO", clusterRequest))
+	//module.Log.Info("Sending offset time request to cluster", zap.String("TIME-LAG", "TIME-lAG"), zap.Stringer("TPO", clusterRequest))
 	module.App.ClusterChannel <- clusterRequest
 
 	// blocking send here to get time lag response
 	resp := <-consumerCtx.clusterResponseChannel
-	module.Log.Info("Received response for cluster request", zap.String("TIME-LAG", "TIME-lAG"), zap.Stringer("TPO", resp))
+	//module.Log.Info("Received response for cluster request", zap.String("TIME-LAG", "TIME-lAG"), zap.Stringer("TPO", resp))
 
 	return resp.Timestamp, resp.Error
 }

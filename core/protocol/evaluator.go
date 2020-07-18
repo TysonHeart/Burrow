@@ -10,7 +10,9 @@
 
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
 // EvaluatorRequest is sent over the EvaluatorChannel that is stored in the application context. It is a query for the
 // status of a group in a cluster. The response to this query is sent over the reply channel. This request is typically
@@ -57,6 +59,11 @@ type PartitionStatus struct {
 	// last committed offset and the current broker end offset
 	CurrentLag uint64 `json:"current_lag"`
 
+	// The current time lag corresponding to 'CurrentLag' above. This is calculated using the timestamp in the message whose
+	// offset was committed and the timestamp in the message for broker end offset.
+	// Value is in milliseconds
+	CurrentTimeLag int64 `json:"current_time_lag"`
+
 	// A number between 0.0 and 1.0 that describes the percentage complete the offset information is for this partition.
 	// For example, if Burrow has been configured to store 10 offsets, and Burrow has only stored 7 commits for this
 	// partition, Complete will be 0.7
@@ -95,6 +102,12 @@ type ConsumerGroupStatus struct {
 
 	// The sum of all partition CurrentLag values for the group
 	TotalLag uint64 `json:"totallag"`
+
+	// Min time lag value across all partitions consumed by this consumer group. Value in milliseconds
+	MinTimeLag int64 `json:"mintimelag"`
+
+	// Max time lag value across all partitions consumed by this consumer group. Value in milliseconds
+	MaxTimeLag int64 `json:"maxtimelag"`
 }
 
 // StatusConstant describes the state of a partition or group as a single value. These values are ordered from least

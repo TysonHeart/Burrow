@@ -53,8 +53,9 @@ type InMemoryStorage struct {
 }
 
 type brokerOffset struct {
-	Offset    int64
-	Timestamp int64
+	Offset       int64
+	Timestamp    int64
+	MsgTimestamp time.Time
 }
 
 type consumerPartition struct {
@@ -264,20 +265,22 @@ func (module *InMemoryStorage) addBrokerOffset(request *protocol.StorageRequest,
 
 	if partitionEntry.Value == nil {
 		partitionEntry.Value = &brokerOffset{
-			Offset:    request.Offset,
-			Timestamp: request.Timestamp,
+			Offset:       request.Offset,
+			Timestamp:    request.Timestamp,
+			MsgTimestamp: request.MsgTimestamp,
 		}
 	} else {
 		ringval, _ := partitionEntry.Value.(*brokerOffset)
 		ringval.Offset = request.Offset
 		ringval.Timestamp = request.Timestamp
+		ringval.MsgTimestamp = request.MsgTimestamp
 	}
 
 	requestLogger.Debug("ok")
 	clusterMap.broker[request.Topic] = topicList
 }
 
-func (module *InMemoryStorage) getBrokerOffset(clusterMap *clusterOffsets, topic string, partition int32, requestLogger *zap.Logger) (int64, int32) {
+func (module *InMemoryStorage) getBrokerOffset(clusterMap *clusterOffsets, topic string, partition int32, requestLogger *zap.Logger) (*brokerOffset, int32) {
 	clusterMap.brokerLock.RLock()
 	defer clusterMap.brokerLock.RUnlock()
 
@@ -285,24 +288,24 @@ func (module *InMemoryStorage) getBrokerOffset(clusterMap *clusterOffsets, topic
 	if !ok {
 		// We don't know about this topic from the brokers yet - skip consumer offsets for now
 		requestLogger.Debug("dropped", zap.String("reason", "no topic"))
-		return 0, 0
+		return nil, 0
 	}
 	if partition < 0 {
 		// This should never happen, but if it does, log an warning with the offset information for review
 		requestLogger.Warn("negative partition")
-		return 0, 0
+		return nil, 0
 	}
 	if partition >= int32(len(topicPartitionList)) {
 		// We know about the topic, but partitions have been expanded and we haven't seen that from the broker yet
 		requestLogger.Debug("dropped", zap.String("reason", "no broker partition"))
-		return 0, 0
+		return nil, 0
 	}
 	if topicPartitionList[partition].Value == nil {
 		// We know about the topic and partition, but we haven't actually gotten the broker offset yet
 		requestLogger.Debug("dropped", zap.String("reason", "no broker offset"))
-		return 0, 0
+		return nil, 0
 	}
-	return topicPartitionList[partition].Value.(*brokerOffset).Offset, int32(len(topicPartitionList))
+	return topicPartitionList[partition].Value.(*brokerOffset), int32(len(topicPartitionList))
 }
 
 func (module *InMemoryStorage) getPartitionRing(consumerMap *consumerGroup, topic string, partition int32, partitionCount int32, requestLogger *zap.Logger) *ring.Ring {
@@ -400,31 +403,50 @@ func (module *InMemoryStorage) addConsumerOffset(request *protocol.StorageReques
 	}
 	// Calculate the lag against the brokerOffset
 	var partitionLag uint64
-	if brokerOffset < request.Offset {
+	var partitionTimeLag time.Duration
+
+	if brokerOffset.Offset < request.Offset {
 		// Little bit of a hack - because we only get broker offsets periodically, it's possible the consumer offset could be ahead of where we think the broker
 		// is. In this case, just mark it as zero lag.
 		partitionLag = 0
+		partitionTimeLag = 0
 	} else {
-		partitionLag = uint64(brokerOffset - request.Offset)
+		partitionLag = uint64(brokerOffset.Offset - request.Offset)
+
+		// if there is an error in fetching either of the time offsets, return -1
+		// Assumption is zero is invalid time.
+		if brokerOffset.MsgTimestamp.IsZero() || request.MsgTimestamp.IsZero() {
+			partitionTimeLag = -1
+		} else {
+			partitionTimeLag = brokerOffset.MsgTimestamp.Sub(request.MsgTimestamp)
+		}
 	}
+
+	requestLogger.Info("Lag",
+		zap.String("brokeroffsettimestamp", brokerOffset.MsgTimestamp.String()),
+		zap.String("requesttimetstamp", request.MsgTimestamp.String()),
+	)
 
 	// Update or create the ring value at the current pointer
 	if consumerPartitionRing.Value == nil {
 		consumerPartitionRing.Value = &protocol.ConsumerOffset{
-			Offset:    request.Offset,
-			Timestamp: request.Timestamp,
-			Lag:       partitionLag,
+			Offset:       request.Offset,
+			Timestamp:    request.Timestamp,
+			Lag:          partitionLag,
+			MsgTimestamp: request.MsgTimestamp,
 		}
 	} else {
 		ringval, _ := consumerPartitionRing.Value.(*protocol.ConsumerOffset)
 		ringval.Offset = request.Offset
 		ringval.Timestamp = request.Timestamp
 		ringval.Lag = partitionLag
+		ringval.MsgTimestamp = request.MsgTimestamp
 	}
+
 	consumerMap.lastCommit = request.Timestamp
 
 	// Advance the ring pointer
-	requestLogger.Debug("ok", zap.Uint64("lag", partitionLag))
+	requestLogger.Debug("ok", zap.Uint64("lag", partitionLag), zap.Int64("partitionTimeLag", int64(partitionTimeLag)))
 	consumerMap.topics[request.Topic][request.Partition].offsets = consumerMap.topics[request.Topic][request.Partition].offsets.Next()
 }
 
@@ -652,9 +674,10 @@ func getConsumerTopicList(consumerMap *consumerGroup) protocol.ConsumerTopics {
 
 						// Make a copy so that we can release the lock and be safe
 						consumerPartition.Offsets[i] = &protocol.ConsumerOffset{
-							Offset:    ringval.Offset,
-							Lag:       ringval.Lag,
-							Timestamp: ringval.Timestamp,
+							Offset:       ringval.Offset,
+							Lag:          ringval.Lag,
+							Timestamp:    ringval.Timestamp,
+							MsgTimestamp: ringval.MsgTimestamp,
 						}
 					}
 					ringPtr = ringPtr.Next()
@@ -712,24 +735,39 @@ func (module *InMemoryStorage) fetchConsumer(request *protocol.StorageRequest, r
 
 		for p, partition := range partitions {
 			// Build the slice of broker offsets to return
+			var lastBrokerOffsetTimestamp time.Time
 			partition.BrokerOffsets = make([]int64, 0, module.intervals)
 			brokerOffsetPtr := topicMap[p].Next()
 			brokerOffsetPtr.Do(func(item interface{}) {
 				if item != nil {
 					partition.BrokerOffsets = append(partition.BrokerOffsets, item.(*brokerOffset).Offset)
+					lastBrokerOffsetTimestamp = item.(*brokerOffset).MsgTimestamp
 				}
 			})
 
 			if len(partition.Offsets) > 0 {
 				brokerOffset := partition.BrokerOffsets[len(partition.BrokerOffsets)-1]
 				lastOffset := partition.Offsets[len(partition.Offsets)-1]
+
 				if lastOffset != nil {
+					partition.MsgTimestamp = lastOffset.MsgTimestamp
+
 					if brokerOffset < lastOffset.Offset {
 						// Little bit of a hack - because we only get broker offsets periodically, it's possible the consumer offset could be ahead of where we think the broker
 						// is. In this case, just mark it as zero lag.
 						partition.CurrentLag = 0
+						partition.CurrentTimeLag = 0
+
 					} else {
 						partition.CurrentLag = uint64(brokerOffset - lastOffset.Offset)
+
+						// if the message timestamp is not available for any reason, set the time lag to -1.
+						// -1 is our lag error value.
+						if lastBrokerOffsetTimestamp.IsZero() || lastOffset.MsgTimestamp.IsZero() {
+							partition.CurrentTimeLag = -1
+						} else {
+							partition.CurrentTimeLag = lastBrokerOffsetTimestamp.Sub(lastOffset.MsgTimestamp)
+						}
 					}
 				}
 			}

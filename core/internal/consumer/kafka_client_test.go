@@ -91,8 +91,14 @@ func TestKafkaClient_partitionConsumer(t *testing.T) {
 	consumer.On("Messages").Return(func() <-chan *sarama.ConsumerMessage { return messageChan }())
 	consumer.On("Errors").Return(func() <-chan *sarama.ConsumerError { return errorChan }())
 
+	consumerCtx := &OffsetsPartitionConsumerCtx{
+		module:                 module,
+		clusterResponseChannel: make(chan *protocol.OffsetFetchResponse),
+		commitMetaDataMap:      make(map[string]*CommitMetadata, 512),
+	}
+
 	module.running.Add(1)
-	go module.partitionConsumer(consumer)
+	go module.partitionConsumer(consumer, consumerCtx)
 
 	// Send a message over the error channel to make sure it doesn't block
 	testError := &sarama.ConsumerError{

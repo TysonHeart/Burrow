@@ -10,7 +10,10 @@
 
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // StorageRequestConstant is used in StorageRequest to indicate the type of request. Numeric ordering is not important
 type StorageRequestConstant int
@@ -133,6 +136,9 @@ type StorageRequest struct {
 
 	// For StorageSetConsumerOwner requests, a string describing the consumer host that owns the partition
 	Owner string
+
+	// Message Timestamp
+	MsgTimestamp time.Time
 }
 
 // ConsumerPartition represents the information stored for a group for a single partition. It is used as part of the
@@ -154,6 +160,12 @@ type ConsumerPartition struct {
 	// The current number of messages that the consumer is behind for this partition. This is calculated using the
 	// last committed offset and the current broker end offset
 	CurrentLag uint64 `json:"current-lag"`
+
+	// The current time lag corresponding to 'CurrentLag' above. This is calculated using the timestamp in the message whose
+	// offset was committed and the timestamp in the message for broker end offset
+	CurrentTimeLag time.Duration `json:"current_time_lag"`
+
+	MsgTimestamp time.Time `json:"msgtimestamp"`
 }
 
 // ConsumerOffset represents a single offset stored. It is used as part of the response to a StorageFetchConsumer
@@ -168,6 +180,9 @@ type ConsumerOffset struct {
 	// The number of messages that the consumer was behind at the time that the offset was committed. This number is
 	// not updated after the offset was committed, so it does not represent the current lag of the consumer.
 	Lag uint64 `json:"lag"`
+
+	// Timestamp in the message offset of which was committed
+	MsgTimestamp time.Time `json:"msgtimestamp"`
 }
 
 // ConsumerTopics is the response that is sent for a StorageFetchConsumer request. It is a map of topic names to

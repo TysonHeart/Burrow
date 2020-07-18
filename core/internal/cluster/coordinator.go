@@ -54,7 +54,7 @@ type Coordinator struct {
 
 type ClusterModule interface {
 	protocol.Module
-	GetCommunicationChannel() chan *protocol.ClusterRequest
+	GetCommunicationChannel() chan *protocol.OffsetFetchRequest
 }
 
 // getModuleForClass returns the correct module based on the passed className. As part of the Configure steps, if there
@@ -127,9 +127,6 @@ func (bc *Coordinator) mainLoop() {
 	for {
 		select {
 		case req := <-bc.App.ClusterChannel:
-			bc.Log.Info("Received request on ClusterChannel",
-				zap.String("TIME-LAG", "TIME-lAG"),
-				zap.String("cluster", req.Cluster))
 			mod := bc.modules[req.Cluster]
 			if mod != nil {
 				channel := mod.(ClusterModule).GetCommunicationChannel()

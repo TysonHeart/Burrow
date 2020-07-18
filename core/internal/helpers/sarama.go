@@ -303,6 +303,9 @@ type SaramaBroker interface {
 
 	// GetAvailableOffsets sends an OffsetRequest to the broker and returns the OffsetResponse that was received
 	GetAvailableOffsets(*sarama.OffsetRequest) (*sarama.OffsetResponse, error)
+
+	// Fetch returns a FetchResponse or error
+	Fetch(request *sarama.FetchRequest) (*sarama.FetchResponse, error)
 }
 
 // BurrowSaramaBroker is an implementation of the SaramaBroker interface that is used with SaramaClient
@@ -323,6 +326,11 @@ func (b *BurrowSaramaBroker) Close() error {
 // GetAvailableOffsets sends an OffsetRequest to the broker and returns the OffsetResponse that was received
 func (b *BurrowSaramaBroker) GetAvailableOffsets(request *sarama.OffsetRequest) (*sarama.OffsetResponse, error) {
 	return b.broker.GetAvailableOffsets(request)
+}
+
+// Fetch returns a FetchResponse or error
+func (b *BurrowSaramaBroker) Fetch(request *sarama.FetchRequest) (*sarama.FetchResponse, error) {
+	return b.broker.Fetch(request)
 }
 
 // MockSaramaClient is a mock of SaramaClient. It is used in tests by multiple packages. It should never be used in the

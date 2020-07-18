@@ -49,11 +49,19 @@ type KafkaCluster struct {
 	fetchMetadata bool
 	topicMap      map[string]int
 
-	requestChannel chan *protocol.ClusterRequest
+	requestChannel chan *protocol.OffsetFetchRequest
+
+	commitMetadataCache map[string]*protocol.CommitMetadata
+
+	// This lock is used when modifying commit metadata cache
+	commitMetadataCacheLock *sync.RWMutex
+
+	// min time interval for time lookup in seconds
+	minTimeLookupInterval int64
 }
 
 // GetCommunicationChannel return the communication channel for this cluster
-func (module *KafkaCluster) GetCommunicationChannel() chan *protocol.ClusterRequest {
+func (module *KafkaCluster) GetCommunicationChannel() chan *protocol.OffsetFetchRequest {
 	return module.requestChannel
 }
 
@@ -76,6 +84,9 @@ func (module *KafkaCluster) Configure(name string, configRoot string) {
 	} else if !helpers.ValidateHostList(module.servers) {
 		panic("Cluster '" + name + "' has one or more improperly formatted servers (must be host:port)")
 	}
+
+	viper.SetDefault(configRoot+".min-time-lookup", 900)
+	module.minTimeLookupInterval = viper.GetInt64(configRoot + ".min-time-lookup")
 
 	// Set defaults for configs if needed
 	viper.SetDefault(configRoot+".offset-refresh", 10)
@@ -100,6 +111,11 @@ func (module *KafkaCluster) Start() error {
 	helperClient := &helpers.BurrowSaramaClient{
 		Client: client,
 	}
+
+	module.commitMetadataCache = make(map[string]*protocol.CommitMetadata, 512)
+
+	module.commitMetadataCacheLock = &sync.RWMutex{}
+
 	module.fetchMetadata = true
 	module.getOffsets(helperClient)
 
@@ -107,7 +123,7 @@ func (module *KafkaCluster) Start() error {
 	module.offsetTicker = time.NewTicker(time.Duration(module.offsetRefresh) * time.Second)
 	module.metadataTicker = time.NewTicker(time.Duration(module.topicRefresh) * time.Second)
 
-	module.requestChannel = make(chan *protocol.ClusterRequest, 50)
+	module.requestChannel = make(chan *protocol.OffsetFetchRequest, 50)
 
 	go module.mainLoop(helperClient)
 
@@ -145,46 +161,184 @@ func (module *KafkaCluster) mainLoop(client helpers.SaramaClient) {
 	}
 }
 
-func (module *KafkaCluster) processClusterRequest(client helpers.SaramaClient, req *protocol.ClusterRequest) error {
-	module.Log.Info("Received cluster request for", zap.Stringer("TPO", req))
+func (module *KafkaCluster) processClusterRequest(client helpers.SaramaClient, req *protocol.OffsetFetchRequest) error {
+	response := &protocol.OffsetFetchResponse{}
 
-	t, err := module.getMessageTimestamp(client, req.Topic, req.Partition, req.Offset)
+	t, err := module.getOffsetTimestamp(client, req.Category, req.Topic, req.Partition, req.Offset)
 	if err != nil {
-		module.Log.Error("Error", zap.Error(err))
-		req.Error = err
+		response.Error = err
 	} else {
-		req.Timestamp = t
-		req.Error = nil
+		response.Timestamp = t
+		response.Error = nil
 	}
 
-	req.ResponseChannel <- req
+	req.ResponseChannel <- response
 
 	return nil
 }
 
-func (module *KafkaCluster) getMessageTimestamp(client helpers.SaramaClient, topic string, partition int32, offset int64) (time.Time, error) {
-	consumer, err := client.NewConsumerFromClient()
+func (module *KafkaCluster) getOffsetTimestamp(client helpers.SaramaClient, category string, topic string, partition int32, offset int64) (time.Time, error) {
+
+	key1 := fmt.Sprintf("%s:%s:%d", category, topic, partition)
+
+	module.commitMetadataCacheLock.RLock()
+	if val, ok := module.commitMetadataCache[key1]; !ok {
+
+		module.commitMetadataCacheLock.RUnlock()
+		module.Log.Debug("No cache entry for key for offset time lookup; first lookup",
+			zap.String("key", key1))
+
+		t, err := module.fetchMessageTimestamp(client, topic, partition, offset)
+		if err != nil {
+			return t, err
+		}
+
+		cmd := &protocol.CommitMetadata{
+			MsgTimestamp: t,
+			LastUpdated:  time.Now(),
+		}
+
+		module.commitMetadataCacheLock.Lock()
+		module.commitMetadataCache[key1] = cmd
+		module.commitMetadataCacheLock.Unlock()
+
+		return cmd.MsgTimestamp, nil
+
+	} else {
+		module.commitMetadataCacheLock.RUnlock()
+
+		if time.Now().Sub(val.LastUpdated).Seconds() > float64(module.minTimeLookupInterval) {
+			module.Log.Info("Offset time lookup min interval exceeded, looking up time for key",
+				zap.String("key", key1))
+
+			t, err := module.fetchMessageTimestamp(client, topic, partition, offset)
+			if err != nil {
+				return time.Time{}, err
+			}
+
+			val.LastUpdated = time.Now()
+			val.MsgTimestamp = t
+
+			module.commitMetadataCacheLock.Lock()
+			module.commitMetadataCache[key1] = val
+			module.commitMetadataCacheLock.Unlock()
+		}
+
+		return val.MsgTimestamp, nil
+	}
+}
+
+// func (module *KafkaCluster) getMessageTimestamp(client helpers.SaramaClient, topic string, partition int32, offset int64) (time.Time, error) {
+// 	consumer, err := client.NewConsumerFromClient()
+// 	if err != nil {
+// 		module.Log.Error("Error creating new consumer from client")
+// 		return time.Time{}, fmt.Errorf("error getting new consumer from client")
+// 	}
+
+// 	pConsumer, err := consumer.ConsumePartition(topic, partition, offset-1)
+// 	defer consumer.Close()
+
+// 	if err != nil {
+// 		module.Log.Error("Error starting time offset consumer",
+// 			zap.String("topic", topic), zap.Int32("partition", partition), zap.Int64("offset", offset))
+// 		return time.Time{}, fmt.Errorf("Error starting time offset consumer for: %s:%d:%d", topic, partition, offset)
+// 	}
+// 	for message := range pConsumer.Messages() {
+// 		module.Log.Info("Received message for finding timestamp for",
+// 			zap.String("topic", topic), zap.Int32("partition", partition), zap.Int64("offset", offset))
+
+// 		return message.Timestamp, nil
+// 	}
+
+// 	return time.Time{}, fmt.Errorf("No messages found for get timestamp for at TPO: %s:%d:%d", topic, partition, offset)
+// }
+
+// this function finds the leader for a given topic+partition and issues a fetch request.
+// The timestamp from the response is returned.
+func (module *KafkaCluster) fetchMessageTimestamp(client helpers.SaramaClient, topic string, partition int32, offset int64) (time.Time, error) {
+
+	broker, err := client.Leader(topic, partition)
 	if err != nil {
-		module.Log.Error("Error creating new consumer from client")
-		return time.Time{}, fmt.Errorf("error getting new consumer from client")
+		return time.Time{}, err
 	}
 
-	pConsumer, err := consumer.ConsumePartition(topic, partition, offset-1)
-	defer consumer.Close()
+	request := &sarama.FetchRequest{
+		MinBytes:    client.Config().Consumer.Fetch.Min,
+		MaxWaitTime: int32(client.Config().Consumer.MaxWaitTime / time.Millisecond),
+	}
 
+	if client.Config().Version.IsAtLeast(sarama.V0_9_0_0) {
+		request.Version = 1
+	}
+	if client.Config().Version.IsAtLeast(sarama.V0_10_0_0) {
+		request.Version = 2
+	}
+	if client.Config().Version.IsAtLeast(sarama.V0_10_1_0) {
+		request.Version = 3
+		request.MaxBytes = sarama.MaxResponseSize
+	}
+	if client.Config().Version.IsAtLeast(sarama.V0_11_0_0) {
+		request.Version = 4
+		request.Isolation = client.Config().Consumer.IsolationLevel
+	}
+	if client.Config().Version.IsAtLeast(sarama.V1_1_0_0) {
+		request.Version = 7
+		// We do not currently implement KIP-227 FetchSessions. Setting the id to 0
+		// and the epoch to -1 tells the broker not to generate as session ID we're going
+		// to just ignore anyway.
+		request.SessionID = 0
+		request.SessionEpoch = -1
+	}
+	if client.Config().Version.IsAtLeast(sarama.V2_1_0_0) {
+		request.Version = 10
+	}
+	if client.Config().Version.IsAtLeast(sarama.V2_3_0_0) {
+		request.Version = 11
+		request.RackID = client.Config().RackID
+	}
+
+	request.AddBlock(topic, partition, offset, client.Config().Consumer.Fetch.Default)
+
+	response, err := broker.Fetch(request)
 	if err != nil {
-		module.Log.Error("Error starting time offset consumer",
-			zap.String("topic", topic), zap.Int32("partition", partition), zap.Int64("offset", offset))
-		return time.Time{}, fmt.Errorf("Error starting time offset consumer for: %s:%d:%d", topic, partition, offset)
-	}
-	for message := range pConsumer.Messages() {
-		module.Log.Info("Received message for finding timestamp for",
-			zap.String("topic", topic), zap.Int32("partition", partition), zap.Int64("offset", offset))
-
-		return message.Timestamp, nil
+		return time.Time{}, err
 	}
 
-	return time.Time{}, fmt.Errorf("No messages found for get timestamp for at TPO: %s:%d:%d", topic, partition, offset)
+	var msgTimestamp time.Time
+
+	block := response.GetBlock(topic, partition)
+	if block == nil {
+		return time.Time{}, sarama.ErrIncompleteResponse
+	}
+
+	//module.Log.Info("block data", zap.Any("blockdump", block))
+
+	if block.Err != sarama.ErrNoError {
+		return time.Time{}, fmt.Errorf("Block Error:%d", block.Err)
+	}
+
+	if len(block.RecordsSet) <= 0 {
+		return time.Time{}, fmt.Errorf("No records in block for: %s:%d:%d", topic, partition, offset)
+	}
+
+	if block.Partial {
+		return time.Time{}, fmt.Errorf("partial block data for: %s:%d:%d", topic, partition, offset)
+	}
+
+	if len(block.RecordsSet[0].MsgSet.Messages) <= 0 {
+		return time.Time{}, fmt.Errorf("No messages in recordset for: %s:%d:%d", topic, partition, offset)
+	}
+
+	msgTimestamp = block.RecordsSet[0].MsgSet.Messages[0].Msg.Timestamp
+
+	module.Log.Info("Looked up timestamp for message",
+		zap.String("topic", topic),
+		zap.Int32("partition", partition),
+		zap.Int64("offset", offset),
+		zap.String("timestamp", msgTimestamp.String()),
+	)
+
+	return msgTimestamp, nil
 }
 
 func (module *KafkaCluster) maybeUpdateMetadataAndDeleteTopics(client helpers.SaramaClient) {
@@ -299,6 +453,19 @@ func (module *KafkaCluster) getOffsets(client helpers.SaramaClient) {
 					errorTopics.Store(topic, true)
 					continue
 				}
+
+				// The log end offset is the offset of next message that will be produced to. So we use but one message (offsetValue.Offset-1).
+				msgTimestamp, err := module.getOffsetTimestamp(client, "high-watermark", topic, partition, (offsetResponse.Offsets[0] - 1))
+				if err != nil {
+					module.Log.Error("Error fetching timestamp for",
+						zap.String("topic", topic),
+						zap.Int32("partition", partition),
+						zap.Int64("offset", offsetResponse.Offsets[0]),
+						zap.Error(err),
+					)
+					//return
+				}
+
 				offset := &protocol.StorageRequest{
 					RequestType:         protocol.StorageSetBrokerOffset,
 					Cluster:             module.name,
@@ -307,7 +474,10 @@ func (module *KafkaCluster) getOffsets(client helpers.SaramaClient) {
 					Offset:              offsetResponse.Offsets[0],
 					Timestamp:           ts,
 					TopicPartitionCount: int32(module.topicMap[topic]),
+					MsgTimestamp:        msgTimestamp,
 				}
+
+				module.Log.Info("StorageSetBrokerOffset timestamp", zap.String("msgtime", offset.MsgTimestamp.String()))
 				helpers.TimeoutSendStorageRequest(module.App.StorageChannel, offset, 1)
 			}
 		}

@@ -64,7 +64,7 @@ type ApplicationContext struct {
 	// This is the channel over which any module should send cluster requests to a cluster. It is serviced by the
 	// cluster coordinator. First request implemented with this is message timestamp request for a given cluser, topic,
 	// partition, offset.
-	ClusterChannel chan *ClusterRequest
+	ClusterChannel chan *OffsetFetchRequest
 }
 
 // Module is a common interface for all modules so that they can be manipulated by the coordinators in the same way.
